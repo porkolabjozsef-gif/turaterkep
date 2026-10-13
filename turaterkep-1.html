@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Túratérkép-készítő</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+:root{--bar:#16202a;--fg:#eef3f8;--muted:#9fb0c0;--trail:#1f4fd8;--ok:#1fa45a;--panel:#fff;--ink:#18222d;--line:#d5dce4;--err:#b3261e}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{display:flex;flex-direction:column;font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bar);color:var(--fg)}
+header,footer{flex:none;background:var(--bar);padding:8px 10px;display:flex;align-items:center;gap:8px}
+header{padding-top:calc(8px + env(safe-area-inset-top,0px))}
+footer{padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));flex-wrap:wrap}
+#map{flex:1}
+#map.adding{cursor:crosshair;box-shadow:inset 0 0 0 4px #e0342b}
+#info{flex:1;min-width:0;display:flex;flex-direction:column}
+#info b{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#info span{color:var(--muted);font-size:12.5px}
+button{font:inherit;border:0;border-radius:10px;padding:10px 12px;background:#2a3846;color:var(--fg);font-weight:600;touch-action:manipulation;min-height:46px}
+button:disabled{opacity:.4}
+button.go{background:var(--trail);color:#fff}
+button.ok{background:var(--ok);color:#fff}
+#pdf{flex:1;font-size:16px}
+#pagename{min-width:52px;text-align:center;font-weight:800;font-size:17px}
+.msg{font-size:14px;margin:0;min-height:1em}
+.msg.err{color:#ff8a80}
+#panel,#prev{position:fixed;inset:0;background:rgba(10,15,20,.6);display:none;z-index:2000}
+#panel.open,#prev.open{display:block}
+#sheet{position:absolute;left:0;right:0;bottom:0;max-height:92%;overflow:auto;background:var(--panel);color:var(--ink);border-radius:14px 14px 0 0;padding:16px 16px calc(22px + env(safe-area-inset-bottom,0px));display:grid;gap:14px}
+#sheet h2{margin:0;font-size:18px}
+#sheet h3{margin:0 0 4px;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#56636f}
+#sheet section{display:grid;gap:8px;border-top:1px solid var(--line);padding-top:12px}
+#sheet button{background:#e8edf3;color:var(--ink)}
+#sheet button.go{background:var(--trail);color:#fff}
+#sheet button.ok{background:var(--ok);color:#fff}
+#sheet .msg{color:#1b5e3a}
+#sheet .msg.err{color:var(--err)}
+#sheet select,#sheet input[type=text]{font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;width:100%;background:#fff;color:var(--ink)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.note{font-size:13px;color:#56636f;margin:0}
+progress{width:100%;height:10px}
+#pts{display:grid;gap:6px}
+.pt{display:grid;grid-template-columns:28px 1fr auto;gap:6px;align-items:center}
+.pt .n{width:24px;height:24px;border-radius:50%;background:#c62828;color:#fff;font-weight:800;font-size:12px;display:grid;place-items:center}
+.pt input{padding:6px!important}
+.pt .km{font-size:12px;color:#56636f;grid-column:2}
+.pt button{min-height:34px;padding:4px 10px}
+#prev{overflow:auto;padding:10px}
+#prev img{width:100%;height:auto;background:#fff;display:block}
+#prevbar{position:sticky;top:0;display:flex;justify-content:flex-end;padding-bottom:8px}
+.lbl{background:rgba(255,255,255,.92);border:1px solid #333;border-radius:4px;padding:0 5px;font-weight:800;font-size:13px;color:#222;white-space:nowrap}
+.lbl.cur{background:#1f4fd8;color:#fff;border-color:#1f4fd8}
+.trrow{display:grid;grid-template-columns:auto 34px 1fr auto;gap:8px;align-items:center;font-size:14px}
+.trrow small{color:#56636f}
+.sym{width:30px;height:22px;border-radius:3px;background:#fff;border:1px solid #bbb;display:block}
+.mk{width:22px;height:22px;border-radius:50%;background:#c62828;border:2px solid #fff;color:#fff;font:800 11px/18px system-ui;text-align:center;box-shadow:0 0 2px #000}
+</style>
+</head>
+<body>
+<header>
+  <div id="info"><b id="title">Túratérkép-készítő</b><span id="sub">⚙ → GPX-fájl betöltése</span></div>
+  <button id="gear" aria-label="Beállítások">⚙</button>
+</header>
+<div id="map"></div>
+<footer>
+  <button id="pprev" aria-label="Előző lap">◀</button>
+  <span id="pagename">–</span>
+  <button id="pnext" aria-label="Következő lap">▶</button>
+  <button id="look" disabled>👁</button>
+  <button id="pdf" class="ok" disabled>📄 PDF készítése</button>
+  <p class="msg" id="fmsg" style="flex-basis:100%"></p>
+</footer>
+
+<div id="prev"><div id="prevbar"><button id="prevclose">Bezár</button></div><img id="previmg" alt="A lap előnézete"></div>
+
+<div id="panel"><div id="sheet">
+  <div class="row" style="justify-content:space-between"><h2>Beállítások</h2><button id="close">Bezár</button></div>
+  <p class="msg" id="msg"></p>
+
+  <section>
+    <h3>1. Útvonal</h3>
+    <input type="file" id="gpx" multiple accept=".gpx,application/gpx+xml,application/xml,text/xml">
+    <p class="note">Egy vagy több GPX-fájl. Több fájlt (pl. szakaszokat) sorrendtől függetlenül összefűz. A GPX-ben lévő pontokat (waypoint) is betölti.</p>
+    <div class="row"><button id="reverse">Irány megfordítása</button></div>
+    <p class="note" id="routeinfo">Nincs betöltött útvonal.</p>
+  </section>
+
+  <section>
+    <h3>2. Térkép</h3>
+    <label>Lépték
+      <select id="scale">
+        <option value="25000">1:25 000 – részletes, terepi tájékozódáshoz</option>
+        <option value="40000">1:40 000 – szokásos turistatérkép</option>
+        <option value="50000">1:50 000 – kevesebb lap</option>
+      </select></label>
+    <label>Alaptérkép
+      <select id="base">
+        <option value="mapyo">Mapy.com Outdoor – szintvonal + minden turistajelzés</option>
+        <option value="mapyb">Mapy.com Basic – jelzések nélkül (a kapcsolható utakhoz)</option>
+        <option value="otm">OpenTopoMap – szintvonalakkal, jelzések nélkül</option>
+        <option value="osm">OpenStreetMap – alap</option>
+        <option value="custom">Saját csempe-URL…</option>
+      </select></label>
+    <input type="text" id="customurl" placeholder="https://…/{z}/{x}/{y}.png" hidden>
+    <div id="mapybox" hidden>
+      <label>Mapy.com API-kulcs <input type="text" id="mapykey" placeholder="ingyenes kulcs: developer.mapy.com" autocomplete="off"></label>
+      <p class="note">Kulcsot a <a href="https://developer.mapy.com/" target="_blank" rel="noopener">developer.mapy.com</a> oldalon kapsz ingyen regisztrációval. Csak ezen a telefonon tárolódik.</p>
+    </div>
+    <p class="note" id="basenote"></p>
+    <label class="row"><input type="checkbox" id="hike"> Összes turistaút a képernyőn, tájékozódáshoz (a PDF-be nem kerül)</label>
+    <label class="row"><input type="checkbox" id="kmticks" checked> Kilométer-jelek az útvonalon</label>
+    <p class="note" id="pageinfo"></p>
+  </section>
+
+  <section>
+    <h3>3. Turistautak a nyomtatásban</h3>
+    <p class="note">Letölti a lapok területén lévő jelzett turistautakat, és te választod ki, melyik kerüljön a nyomtatásba. A térképre a magyar jelkulcs szerint kerülnek: színes vonal és jelzéstábla.</p>
+    <button id="trdl" class="go">Turistautak letöltése a lapok területére</button>
+    <div class="row"><button id="trall">Mind</button><button id="trnone">Egyik sem</button></div>
+    <div id="trlist"><p class="note">Még nincs letöltve.</p></div>
+    <label>A saját útvonal megjelenése
+      <select id="rstyle"><option value="band">Áttetsző kiemelő sáv – a jelzések látszanak rajta</option><option value="line">Kék vonal</option></select></label>
+  </section>
+
+  <section>
+    <h3>4. Pontok (igazolópontok, látnivalók)</h3>
+    <p class="note">A GPX-ben lévő pontok automatikusan bekerülnek. Újat a lenti gombbal, majd a térképre koppintva adhatsz hozzá.</p>
+    <div class="row"><button id="addpt">＋ Pont hozzáadása a térképen</button><button id="clearpts">Összes pont törlése</button></div>
+    <div id="pts"></div>
+  </section>
+
+  <section>
+    <h3>5. Füzet</h3>
+    <label>Cím <input type="text" id="ttl" placeholder="pl. Végig a kéken – OKT Nagyvázsony–Keszthely"></label>
+    <label>Nyomtatási elrendezés
+      <select id="layout">
+        <option value="plain">Sima – minden lap a saját tájolásában</option>
+        <option value="simplex">Fűzéshez, egyoldalas – minden lap állóra forgatva</option>
+        <option value="duplex">Fűzéshez, kétoldalas (hosszú él) – minden lap állóra forgatva</option>
+      </select></label>
+    <label class="row"><input type="checkbox" id="ovw" checked> Áttekintő térkép az elején</label>
+    <label class="row"><input type="checkbox" id="ptlist" checked> Pontlista külön lapon</label>
+    <button id="pdf2" class="ok">📄 PDF készítése</button>
+    <progress id="prog" value="0" max="1" hidden></progress>
+  </section>
+
+  <section>
+    <h3>Újrakezdés</h3>
+    <button id="reset">Minden törlése</button>
+    <p class="note" id="confirm" hidden>Nyomd meg még egyszer a megerősítéshez.</p>
+  </section>
+</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script>
+"use strict";
+// ================= beállítások =================
+const KEY="turaterkep-v1";
+const PXMM=8;                              // a kész lap felbontása: 8 képpont/mm ≈ 203 dpi
+const PAD_M=300;                           // margó az útvonal körül (m)
+const FRAME={L:[277,160],P:[190,228]};     // térképmező mm-ben: fekvő / álló A4
+const BASES={osm:{url:"https://tile.openstreetmap.org/{z}/{x}/{y}.png",max:19,attr:"© OpenStreetMap közreműködők"},
+             otm:{url:"https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",max:17,attr:"© OpenStreetMap közreműködők, SRTM · © OpenTopoMap (CC-BY-SA)"}};
+let S={route:null,points:[],trSel:{},rstyle:"band",mapykey:"",scale:25000,base:"otm",custom:"",hike:false,kmticks:true,title:"",layout:"plain",ovw:true,ptlist:true,cur:0};
+try{const s=JSON.parse(localStorage.getItem(KEY)||"null"); if(s) S=Object.assign(S,s);}catch(e){}
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}};
+const $=id=>document.getElementById(id);
+function msg(t,err){for(const id of ["msg","fmsg"]){$(id).textContent=t;$(id).className="msg"+(err?" err":"");}}
+const base=()=>{
+  if(S.base==="custom") return {url:S.custom||BASES.osm.url,max:18,attr:"© a térképcsempék szolgáltatója"};
+  if(S.base==="mapyo"||S.base==="mapyb") return {url:`https://api.mapy.com/v1/maptiles/${S.base==="mapyo"?"outdoor":"basic"}/256/{z}/{x}/{y}?apikey=${encodeURIComponent(S.mapykey||"")}`,max:18,attr:"© Seznam.cz a.s. a další · Mapy.com · © OpenStreetMap közreműködők"};
+  return BASES[S.base]; };
+
+// ================= geometria =================
+const rad=d=>d*Math.PI/180;
+function hav(a,b){const R=6371000,dl=rad(b[0]-a[0]),dn=rad(b[1]-a[1]);const h=Math.sin(dl/2)**2+Math.cos(rad(a[0]))*Math.cos(rad(b[0]))*Math.sin(dn/2)**2;return 2*R*Math.asin(Math.sqrt(h));}
+function cum(r){const c=[0];for(let i=1;i<r.length;i++)c.push(c[i-1]+hav(r[i-1],r[i]));return c;}
+const proj=(p,z)=>{const s=256*2**z;const la=rad(p[0]);return [(p[1]+180)/360*s,(1-Math.log(Math.tan(la)+1/Math.cos(la))/Math.PI)/2*s];};
+const unproj=(x,y,z)=>{const s=256*2**z;const n=Math.PI-2*Math.PI*y/s;return [180/Math.PI*Math.atan(Math.sinh(n)),x/s*360-180];};
+const mpp=(lat,z)=>156543.034*Math.cos(rad(lat))/2**z;
+function nearestIdx(p){let bi=0,bd=1e18;const r=S.route;for(let i=0;i<r.length;i++){const d=(r[i][0]-p[0])**2+((r[i][1]-p[1])*Math.cos(rad(p[0])))**2;if(d<bd){bd=d;bi=i;}}return bi;}
+const hu=(x,d=1)=>x.toFixed(d).replace(".",",");
+
+// ================= térkép a képernyőn =================
+const map=L.map("map",{zoomControl:false}).setView([47.1,19.4],7);
+L.control.zoom({position:"topright"}).addTo(map);
+let baseLayer=null,hikeLayer=null,routeLayer=null;const frameLayer=L.layerGroup().addTo(map),ptLayer=L.layerGroup().addTo(map);
+function setLayers(){
+  if(baseLayer) map.removeLayer(baseLayer); const b=base();
+  baseLayer=L.tileLayer(b.url,{maxZoom:b.max,subdomains:"abc",attribution:b.attr}).addTo(map); baseLayer.bringToBack();
+  if(hikeLayer){map.removeLayer(hikeLayer);hikeLayer=null;}
+  if(S.hike) hikeLayer=L.tileLayer("https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png",{maxZoom:18,opacity:.8,attribution:"waymarkedtrails.org"}).addTo(map);
+}
+
+// ================= GPX =================
+$("gpx").addEventListener("change",async e=>{
+  const files=[...e.target.files]; if(!files.length) return;
+  try{
+    const segs=[],wpts=[];
+    for(const f of files){
+      const x=new DOMParser().parseFromString(await f.text(),"application/xml");
+      const grab=(parent,tag)=>[...parent.getElementsByTagName(tag)].map(n=>[+n.getAttribute("lat"),+n.getAttribute("lon")]).filter(p=>isFinite(p[0])&&isFinite(p[1]));
+      for(const sg of x.getElementsByTagName("trkseg")){const p=grab(sg,"trkpt");if(p.length>1)segs.push(p);}
+      for(const rt of x.getElementsByTagName("rte")){const p=grab(rt,"rtept");if(p.length>1)segs.push(p);}
+      for(const w of x.getElementsByTagName("wpt")){const t=tag=>{const n=w.getElementsByTagName(tag)[0];return n?n.textContent.trim():"";};
+        wpts.push({lat:+w.getAttribute("lat"),lon:+w.getAttribute("lon"),name:t("name")||"Pont",note:t("desc")||t("cmt")||""});}
+    }
+    if(!segs.length) throw new Error("Nincs útvonal a fájl(ok)ban.");
+    const route=chain(segs);
+    S.route=thin(route); S.cur=0;
+    // GPX-pontok hozzáadása (ismétlések nélkül)
+    for(const w of wpts){ if(!S.points.some(p=>hav([p.lat,p.lon],[w.lat,w.lon])<30)) S.points.push(w); }
+    save(); afterRoute(`${files.length} fájl`); fitRoute();
+  }catch(err){msg(err.message||"A GPX-fájlt nem sikerült beolvasni.",true);}
+  e.target.value="";
+});
+// darabok összefűzése: minden lehetséges kezdőpontból mohón láncol, a legkisebb összes hézagú sorrend nyer
+function chain(segs){
+  if(segs.length===1) return segs[0];
+  let best=null;
+  for(let s0=0;s0<segs.length;s0++) for(const rev0 of [false,true]){
+    const left=segs.map((g,i)=>i).filter(i=>i!==s0); let cur=rev0?segs[s0].slice().reverse():segs[s0].slice(); let gap=0;
+    while(left.length){const e=cur[cur.length-1];let bi=-1,bd=1e18,rv=false;
+      left.forEach((i,k)=>{const g=segs[i];const d0=hav(g[0],e),d1=hav(g[g.length-1],e);if(d0<bd){bd=d0;bi=k;rv=false;}if(d1<bd){bd=d1;bi=k;rv=true;}});
+      const g=segs[left.splice(bi,1)[0]]; gap+=bd; cur=cur.concat(rv?g.slice().reverse():g);}
+    if(!best||gap<best.gap) best={gap,cur};
+  }
+  return best.cur;
+}
+function thin(r){const o=[r[0]];for(const p of r)if(hav(o[o.length-1],p)>=4)o.push(p);if(o[o.length-1]!==r[r.length-1])o.push(r[r.length-1]);return o.map(p=>[+p[0].toFixed(6),+p[1].toFixed(6)]);}
+$("reverse").onclick=()=>{ if(!S.route) return; S.route.reverse(); S.cur=0; save(); afterRoute("megfordítva"); };
+function afterRoute(label){
+  const km=cum(S.route).pop()/1000;
+  $("routeinfo").textContent=`${label?label+": ":""}${hu(km)} km · eleje: ${S.route[0].map(v=>v.toFixed(4)).join(", ")}`;
+  draw(); msg("Útvonal betöltve.");
+}
+function fitRoute(){ if(S.route) map.fitBounds(L.polyline(S.route).getBounds(),{padding:[20,20]}); }
+
+// ================= pontok =================
+function ptKm(){ if(!S.route) return []; const C=cum(S.route);
+  return S.points.map(p=>{const i=nearestIdx([p.lat,p.lon]);return {...p,km:C[i]/1000,off:hav(S.route[i],[p.lat,p.lon]),i};}); }
+function sortedPts(){ return ptKm().sort((a,b)=>a.km-b.km).map((p,k)=>({...p,no:k+1})); }
+let adding=false;
+$("addpt").onclick=()=>{adding=true;$("map").classList.add("adding");$("panel").classList.remove("open");msg("Koppints a térképre az új pont helyén.");};
+map.on("click",e=>{ if(!adding) return; adding=false; $("map").classList.remove("adding");
+  S.points.push({lat:+e.latlng.lat.toFixed(6),lon:+e.latlng.lng.toFixed(6),name:`Pont ${S.points.length+1}`,note:""}); save(); draw(); renderPts(); $("panel").classList.add("open"); msg("Pont hozzáadva – írd át a nevét."); });
+$("clearpts").onclick=()=>{S.points=[];save();draw();renderPts();};
+function renderPts(){
+  const box=$("pts"); box.innerHTML=""; const sp=sortedPts();
+  if(!sp.length){box.innerHTML='<p class="note">Nincs pont.</p>';return;}
+  for(const p of sp){ const idx=S.points.findIndex(q=>q.lat===p.lat&&q.lon===p.lon);
+    const d=document.createElement("div"); d.className="pt";
+    d.innerHTML=`<span class="n">${p.no}</span><input type="text" value="${p.name.replace(/"/g,"&quot;")}" aria-label="Név"><button aria-label="Törlés">✕</button>
+      <span class="km">${hu(p.km)} km${p.off>300?` · ${Math.round(p.off)} m-re az útvonaltól`:""}</span>
+      <input type="text" style="grid-column:2" placeholder="megjegyzés (pl. bélyegző a kút oldalán)" value="${(p.note||"").replace(/"/g,"&quot;")}">`;
+    const [nm,del,nt]=[d.children[1],d.children[2],d.children[4]];
+    nm.onchange=()=>{S.points[idx].name=nm.value;save();draw();}; nt.onchange=()=>{S.points[idx].note=nt.value;save();};
+    del.onclick=()=>{S.points.splice(idx,1);save();draw();renderPts();};
+    box.appendChild(d); }
+}
+
+
+// ================= turistautak (OSM útvonal-relációk) =================
+let TR={};   // kulcs -> {key,label,code,color,shape,n,names:[],ways:[[ [lat,lon],... ],...]}
+try{const t=JSON.parse(localStorage.getItem(KEY+"-tr")||"null"); if(t) TR=t;}catch(e){}
+const COL={k:["Kék","#1e5bd8"],p:["Piros","#d32f2f"],s:["Sárga","#e0a800"],z:["Zöld","#2e7d32"],f:["Fekete","#222"],l:["Lila","#7b1fa2"]};
+const SHP={"":"sáv","+":"kereszt","3":"háromszög","q":"négyzet","b":"barlang","l":"L","c":"kör","o":"kör","t":"T","pec":"pecsét"};
+const OSMC_COL={blue:"k",red:"p",yellow:"s",green:"z",black:"f",purple:"l"};
+const OSMC_SHP={bar:"",stripe:"",cross:"+",triangle:"3",rectangle:"q",dot:"c",circle:"c",L:"l",turned_T:"t",lower:"",bowl:"b"};
+function classify(tags){
+  let jel=(tags.jel||"").toLowerCase().trim(), c=jel[0], r=jel.slice(1);
+  if(!COL[c]){ // osmc:symbol, pl. blue:white:blue_cross
+    const o=(tags["osmc:symbol"]||"").split(":"); const fg=(o[2]||"").split("_"); c=OSMC_COL[fg[0]]||OSMC_COL[o[0]];
+    const sh=fg.slice(1).join("_"); r=sh in OSMC_SHP?OSMC_SHP[sh]:(sh?sh.toLowerCase():"");
+    if(!c) return {key:"egyéb",label:"Egyéb jelzés",code:"?",color:"#666",shape:"?"};
+  }
+  const shape=SHP[r]!==undefined?SHP[r]:r;
+  return {key:c+r,label:`${COL[c][0]} ${shape}`,code:(c+r).toUpperCase(),color:COL[c][1],shape};
+}
+function trailBBox(){ // a lapok (vagy az útvonal) határoló doboza, fok
+  let n=-90,s=90,w=180,e=-180; const add=(la,lo)=>{n=Math.max(n,la);s=Math.min(s,la);w=Math.min(w,lo);e=Math.max(e,lo);};
+  if(PAGES.length) for(const p of PAGES){const a=unproj(p.x0,p.y0,p.z),b=unproj(p.x0+p.w,p.y0+p.h,p.z);add(a[0],a[1]);add(b[0],b[1]);}
+  else if(S.route) for(const q of S.route) add(q[0],q[1]);
+  return [s,w,n,e];
+}
+$("trdl").onclick=async()=>{
+  if(!S.route){msg("Előbb tölts be útvonalat.",true);return;}
+  const [s,w,n,e]=trailBBox(); msg("Turistautak letöltése… (nagy területnél akár egy perc)");
+  const q=`[out:json][timeout:180];relation["route"~"^(hiking|foot)$"](${s.toFixed(4)},${w.toFixed(4)},${n.toFixed(4)},${e.toFixed(4)});out tags geom;`;
+  for(const ep of ["https://overpass-api.de/api/interpreter","https://overpass.kumi.systems/api/interpreter","https://maps.mail.ru/osm/tools/overpass/api/interpreter"]){
+    try{
+      const res=await fetch(ep,{method:"POST",body:"data="+encodeURIComponent(q),headers:{"Content-Type":"application/x-www-form-urlencoded"}});
+      if(!res.ok) throw new Error(res.status); const js=await res.json(); const G={};
+      for(const rel of js.elements||[]){ if(rel.type!=="relation") continue; const t=rel.tags||{}; const c=classify(t);
+        const gr=G[c.key]||(G[c.key]={...c,n:0,names:[],ways:[]}); gr.n++; const nm=t.name||t.ref; if(nm&&gr.names.length<4&&!gr.names.includes(nm)) gr.names.push(nm);
+        for(const m of rel.members||[]) if(m.type==="way"&&m.geometry) gr.ways.push(m.geometry.map(g=>[+g.lat.toFixed(6),+g.lon.toFixed(6)])); }
+      TR=G; try{localStorage.setItem(KEY+"-tr",JSON.stringify(TR));}catch(_){}
+      // alapból: az eddigi választás marad, újaknál a kékek bekapcsolva
+      for(const k in TR) if(!(k in S.trSel)) S.trSel[k]=k[0]==="k";
+      save(); renderTrails(); draw(); msg(`${Object.values(TR).reduce((a,g)=>a+g.n,0)} turistaút, ${Object.keys(TR).length} jelzésfajta.`); return;
+    }catch(err){}
+  }
+  msg("A turistautakat nem sikerült letölteni. Próbáld újra később.",true);
+};
+function symCanvas(gr,px){ // jelzéstábla: fehér alap, színes jel
+  const c=document.createElement("canvas"); c.width=Math.round(px*1.35); c.height=px; drawSym(c.getContext("2d"),gr,c.width/2,c.height/2,px); return c; }
+function drawSym(g,gr,cx,cy,h){
+  const w=h*1.35; g.save(); g.fillStyle="#fff"; g.strokeStyle="rgba(0,0,0,.45)"; g.lineWidth=Math.max(1,h*0.06);
+  g.fillRect(cx-w/2,cy-h/2,w,h); g.strokeRect(cx-w/2,cy-h/2,w,h); g.fillStyle=gr.color; g.strokeStyle=gr.color;
+  const u=h/10, sh=gr.shape;
+  if(sh==="sáv") g.fillRect(cx-w/2+u*0.6,cy-h/6,w-u*1.2,h/3);
+  else if(sh==="kereszt"){g.fillRect(cx-u*1.2,cy-h*0.36,u*2.4,h*0.72);g.fillRect(cx-h*0.36,cy-u*1.2,h*0.72,u*2.4);}
+  else if(sh==="háromszög"){g.beginPath();g.moveTo(cx,cy-h*0.36);g.lineTo(cx+h*0.38,cy+h*0.32);g.lineTo(cx-h*0.38,cy+h*0.32);g.closePath();g.fill();}
+  else if(sh==="négyzet") g.fillRect(cx-h*0.3,cy-h*0.3,h*0.6,h*0.6);
+  else if(sh==="kör"){g.beginPath();g.arc(cx,cy,h*0.32,0,7);g.fill();}
+  else if(sh==="L"){g.fillRect(cx-h*0.28,cy-h*0.34,u*2.2,h*0.68);g.fillRect(cx-h*0.28,cy+h*0.34-u*2.2,h*0.6,u*2.2);}
+  else if(sh==="T"){g.fillRect(cx-h*0.34,cy-h*0.34,h*0.68,u*2.2);g.fillRect(cx-u*1.1,cy-h*0.34,u*2.2,h*0.68);}
+  else if(sh==="barlang"){g.beginPath();g.arc(cx,cy+h*0.3,h*0.36,Math.PI,0);g.closePath();g.fill();}
+  else {g.font=`800 ${h*0.55}px system-ui,sans-serif`;g.textAlign="center";g.textBaseline="middle";g.fillText(gr.code,cx,cy+h*0.04);}
+  g.restore();
+}
+const DASH={"sáv":[],"kereszt":[2.2,0.9],"háromszög":[0.9,0.9],"négyzet":[3,1,0.9,1],"kör":[0.25,1],"L":[1.6,0.7,0.4,0.7],"T":[1.6,0.7,0.4,0.7],"barlang":[0.9,0.6]};
+function renderTrails(){
+  const box=$("trlist"); const gs=Object.values(TR).sort((a,b)=>a.key.localeCompare(b.key,"hu"));
+  if(!gs.length){box.innerHTML='<p class="note">Még nincs letöltve.</p>';return;} box.innerHTML="";
+  for(const gr of gs){ const d=document.createElement("label"); d.className="trrow";
+    const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=!!S.trSel[gr.key]; cb.onchange=()=>{S.trSel[gr.key]=cb.checked;save();draw();};
+    const sy=symCanvas(gr,44); sy.className="sym";
+    const t=document.createElement("span"); t.innerHTML=`<b>${gr.label}</b> (${gr.code})<br><small>${gr.n} út${gr.names.length?": "+gr.names.join(", "):""}</small>`;
+    d.append(cb,sy,t,document.createElement("span")); box.appendChild(d); }
+}
+$("trall").onclick=()=>{for(const k in TR)S.trSel[k]=true;save();renderTrails();draw();};
+$("trnone").onclick=()=>{for(const k in TR)S.trSel[k]=false;save();renderTrails();draw();};
+const selTrails=()=>Object.values(TR).filter(gr=>S.trSel[gr.key]);
+// turistautak a nyomtatott lapra
+function trailsOn(g,z,x0,y0,f,X,Y,W,H){
+  const gs=selTrails(); if(!gs.length) return;
+  g.save(); g.beginPath(); g.rect(X,Y,W,H); g.clip(); g.lineJoin="round"; g.lineCap="round";
+  const paths=[];
+  for(const gr of gs) for(const w of gr.ways){ const pts=w.map(p=>{const q=proj(p,z);return [X+(q[0]-x0)*f,Y+(q[1]-y0)*f];});
+    let inside=false; for(const q of pts) if(q[0]>X-50&&q[0]<X+W+50&&q[1]>Y-50&&q[1]<Y+H+50){inside=true;break;} if(inside) paths.push([gr,pts]); }
+  for(const [gr,pts] of paths){ g.setLineDash([]); g.strokeStyle="rgba(255,255,255,.85)"; g.lineWidth=1.05*MM; g.beginPath(); pts.forEach((q,k)=>k?g.lineTo(q[0],q[1]):g.moveTo(q[0],q[1])); g.stroke(); }
+  for(const [gr,pts] of paths){ g.setLineDash((DASH[gr.shape]||[1.6,0.8]).map(v=>v*MM)); g.strokeStyle=gr.color; g.lineWidth=0.55*MM; g.beginPath(); pts.forEach((q,k)=>k?g.lineTo(q[0],q[1]):g.moveTo(q[0],q[1])); g.stroke(); }
+  g.setLineDash([]);
+  // jelzéstáblák ~45 mm-enként, ütközés nélkül
+  const placed=[], step=45*MM, minD=9*MM, h=3.4*MM;
+  for(const [gr,pts] of paths){ let acc=step*0.5;
+    for(let i=1;i<pts.length;i++){ const dx=pts[i][0]-pts[i-1][0],dy=pts[i][1]-pts[i-1][1],L=Math.hypot(dx,dy); acc+=L;
+      if(acc>=step){ const x=pts[i][0],y=pts[i][1];
+        if(x>X+4*MM&&x<X+W-4*MM&&y>Y+4*MM&&y<Y+H-4*MM&&placed.every(p=>Math.hypot(p[0]-x,p[1]-y)>minD)){ drawSym(g,gr,x,y,h); placed.push([x,y]); acc=0; } } } }
+  g.restore();
+}
+function trailLegend(g,x,y){ // jelmagyarázat a lap aljára: a lapon kiválasztott jelzések
+  const gs=selTrails(); if(!gs.length) return 0; let cx=x;
+  text(g,"Jelzések:",cx,y,2.6,"700","#333"); cx+=g.measureText("Jelzések:").width+2*MM;
+  for(const gr of gs){ drawSym(g,gr,cx+2.3*MM,y-1*MM,3*MM); cx+=5.2*MM; text(g,gr.code,cx,y,2.6,"700","#333"); cx+=g.measureText(gr.code).width+3.5*MM; if(cx>x+250*MM) break; }
+  return 1;
+}
+
+// ================= lapok kiosztása =================
+function zoomFor(den,lat){ // olyan csempe-nagyítás, amelynél ~8 képpont/mm jut a nyomatra
+  let best=14,bd=1e9; for(let z=10;z<=Math.min(18,base().max);z++){const n=den/1000/mpp(lat,z);const d=Math.abs(Math.log(n/PXMM));if(d<bd){bd=d;best=z;}} return best; }
+function pages(){
+  if(!S.route) return [];
+  const lat=S.route.reduce((s,p)=>s+p[0],0)/S.route.length, z=zoomFor(S.scale,lat), nat=S.scale/1000/mpp(lat,z); // nat: csempe-képpont / mm
+  const P=S.route.map(p=>proj(p,z)), pad=PAD_M/mpp(lat,z);
+  const F={L:[FRAME.L[0]*nat,FRAME.L[1]*nat],P:[FRAME.P[0]*nat,FRAME.P[1]*nat]};
+  const out=[]; let i0=0;
+  while(i0<P.length-1){
+    let x0=1e18,y0=1e18,x1=-1e18,y1=-1e18,o=null,i=i0;
+    for(;i<P.length;i++){const p=P[i];const a=Math.min(x0,p[0]),b=Math.min(y0,p[1]),c=Math.max(x1,p[0]),d=Math.max(y1,p[1]);
+      const w=c-a+2*pad,h=d-b+2*pad; let oo=null; if(w<=F.L[0]&&h<=F.L[1])oo="L"; else if(w<=F.P[0]&&h<=F.P[1])oo="P";
+      if(!oo) break; x0=a;y0=b;x1=c;y1=d;o=oo;}
+    if(!o){o="L";x0=x1=P[i0][0];y0=y1=P[i0][1];i=i0+1;}
+    const [fw,fh]=F[o];
+    out.push({no:out.length+1,o,z,nat,i0,i1:i-1,x0:(x0+x1)/2-fw/2,y0:(y0+y1)/2-fh/2,w:fw,h:fh});
+    if(i>=P.length) break; i0=i-1;
+  }
+  return out;
+}
+let PAGES=[];
+function draw(){
+  if(routeLayer){map.removeLayer(routeLayer);routeLayer=null;}
+  frameLayer.clearLayers(); ptLayer.clearLayers(); PAGES=pages();
+  if(S.route){ const ls=[];
+    if(S.rstyle==="band") ls.push(L.polyline(S.route,{color:"#ff0096",weight:14,opacity:.28,interactive:false}));
+    for(const gr of selTrails()) for(const w of gr.ways) ls.push(L.polyline(w,{color:gr.color,weight:3,opacity:.95,dashArray:(DASH[gr.shape]||[]).length?(DASH[gr.shape].map(v=>Math.max(2,v*4)).join(" ")):null,interactive:false}));
+    if(S.rstyle!=="band") ls.push(L.polyline(S.route,{color:"#fff",weight:9,opacity:.9,interactive:false}),L.polyline(S.route,{color:"#1f4fd8",weight:5,interactive:false}));
+    routeLayer=L.layerGroup(ls).addTo(map); }
+  PAGES.forEach((p,k)=>{const a=unproj(p.x0,p.y0,p.z),b=unproj(p.x0+p.w,p.y0+p.h,p.z),cur=k===S.cur;
+    const r=L.rectangle([[b[0],a[1]],[a[0],b[1]]],{color:cur?"#1f4fd8":"#333",weight:cur?3:1.5,dashArray:cur?null:"6 6",fill:false}); r.on("click",()=>{if(!adding)showPage(k);}); r.addTo(frameLayer);
+    L.marker(a,{interactive:false,icon:L.divIcon({className:"",html:`<span class="lbl${cur?" cur":""}">${p.no}</span>`,iconAnchor:[-4,-4]})}).addTo(frameLayer);});
+  for(const p of sortedPts()) L.marker([p.lat,p.lon],{interactive:false,icon:L.divIcon({className:"",html:`<div class="mk">${p.no}</div>`,iconSize:[22,22],iconAnchor:[11,11]})}).addTo(ptLayer);
+  refresh();
+}
+function showPage(k){ if(!PAGES.length) return; S.cur=(k+PAGES.length)%PAGES.length; save(); draw();
+  const p=PAGES[S.cur],a=unproj(p.x0,p.y0,p.z),b=unproj(p.x0+p.w,p.y0+p.h,p.z); map.fitBounds([[b[0],a[1]],[a[0],b[1]]],{padding:[8,8]}); }
+function refresh(){
+  const has=PAGES.length>0;
+  for(const id of ["pdf","pdf2","look"]) $(id).disabled=!has||busy;
+  $("pagename").textContent=has?`${S.cur+1}/${PAGES.length}`:"–";
+  $("title").textContent=S.title||"Túratérkép-készítő";
+  $("sub").textContent=S.route?`${hu(cum(S.route).pop()/1000)} km · ${PAGES.length} lap 1:${(S.scale/1000)} 000 · ${S.points.length} pont`:"⚙ → GPX-fájl betöltése";
+  $("pageinfo").textContent=has?`Ennél a léptéknél ${PAGES.length} részletes A4-es lap kell (${PAGES.filter(p=>p.o==="L").length} fekvő, ${PAGES.filter(p=>p.o==="P").length} álló).`:"";
+}
+
+// ================= csempék =================
+const cache=new Map();
+function tileURL(z,x,y){return base().url.replace("{s}","abc"[(x+y)%3]).replace("{z}",z).replace("{x}",x).replace("{y}",y);}
+function tile(z,x,y){const k=tileURL(z,x,y); if(cache.has(k)){const v=cache.get(k);cache.delete(k);cache.set(k,v);return v;}
+  const p=new Promise((res,rej)=>{const im=new Image();im.crossOrigin="anonymous";im.onload=()=>res(im);im.onerror=()=>rej(new Error("csempe"));im.src=tileURL(z,x,y);});
+  cache.set(k,p); p.catch(()=>cache.delete(k)); if(cache.size>400) cache.delete(cache.keys().next().value); return p;}
+let tilesDone=0;
+// térképkivágat rajzolása: (x0,y0,w,h) csempe-képpontban, z nagyításon, a vászon (X,Y,W,H) téglalapjába
+async function drawMap(g,z,x0,y0,w,h,X,Y,W,H){
+  const f=W/w; g.save(); g.beginPath(); g.rect(X,Y,W,H); g.clip(); g.fillStyle="#f2efe9"; g.fillRect(X,Y,W,H);
+  const jobs=[]; for(let ty=Math.floor(y0/256);ty<=Math.floor((y0+h)/256);ty++)for(let tx=Math.floor(x0/256);tx<=Math.floor((x0+w)/256);tx++)jobs.push([tx,ty]);
+  let i=0; const worker=async()=>{while(i<jobs.length){const [tx,ty]=jobs[i++];let im=null;
+    for(let t=0;t<4&&!im;t++){try{im=await tile(z,tx,ty);}catch(e){await new Promise(r=>setTimeout(r,800*(t+1)));}}
+    if(!im) throw new Error("Néhány térképcsempét nem sikerült letölteni (lassú vagy túlterhelt szerver). Próbáld újra, vagy válts alaptérképet.");
+    g.drawImage(im,X+(tx*256-x0)*f,Y+(ty*256-y0)*f,256*f+0.5,256*f+0.5); tilesDone++; onTile();}};
+  await Promise.all([worker(),worker(),worker()]); g.restore(); return f;
+}
+let onTile=()=>{};
+function tilesOf(z,x0,y0,w,h){return (Math.floor((x0+w)/256)-Math.floor(x0/256)+1)*(Math.floor((y0+h)/256)-Math.floor(y0/256)+1);}
+
+// ================= rajzolási segédek =================
+const MM=PXMM; // 1 mm a vásznon
+function routeOn(g,z,x0,y0,f,X,Y,W,H,widthMM,style){
+  const pts=S.route.map(p=>{const q=proj(p,z);return [X+(q[0]-x0)*f,Y+(q[1]-y0)*f];});
+  g.save(); g.beginPath(); g.rect(X,Y,W,H); g.clip(); g.lineJoin="round"; g.lineCap="round";
+  const layers=style==="band"?[["rgba(255,0,150,.28)",widthMM*4.2]]:[["rgba(255,255,255,.95)",widthMM*1.8],["rgba(31,79,216,.88)",widthMM]];
+  for(const [c,w] of layers){g.strokeStyle=c;g.lineWidth=w*MM;g.beginPath();pts.forEach((q,k)=>k?g.lineTo(q[0],q[1]):g.moveTo(q[0],q[1]));g.stroke();}
+  g.restore(); return pts;
+}
+function kmTicks(g,pts,step,X,Y,W,H){
+  const C=cum(S.route); let next=step*1000;
+  g.save(); g.font=`700 ${2.3*MM}px system-ui,sans-serif`; g.textAlign="center"; g.textBaseline="middle";
+  for(let i=1;i<pts.length;i++){ while(C[i]>=next){ const t=(next-C[i-1])/(C[i]-C[i-1]||1); const x=pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t, y=pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t;
+      if(x>X&&x<X+W&&y>Y&&y<Y+H){ const s=String(next/1000); const r=Math.max(1.7*MM,g.measureText(s).width/2+0.7*MM);
+        g.fillStyle="#fff"; g.strokeStyle="#1f4fd8"; g.lineWidth=0.35*MM; g.beginPath(); g.arc(x,y,r,0,7); g.fill(); g.stroke(); g.fillStyle="#1f4fd8"; g.fillText(s,x,y+0.1*MM);} next+=step*1000; } }
+  g.restore();
+}
+function marker(g,x,y,n,rMM){ const r=rMM*MM; g.save(); g.fillStyle="#fff"; g.beginPath(); g.arc(x,y,r+0.5*MM,0,7); g.fill();
+  g.fillStyle="#c62828"; g.beginPath(); g.arc(x,y,r,0,7); g.fill(); g.fillStyle="#fff"; g.font=`800 ${r*1.15}px system-ui,sans-serif`; g.textAlign="center"; g.textBaseline="middle"; g.fillText(String(n),x,y+0.1*MM); g.restore(); }
+function text(g,s,x,y,sizeMM,weight="400",color="#111",align="left"){g.font=`${weight} ${sizeMM*MM}px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif`;g.fillStyle=color;g.textAlign=align;g.textBaseline="alphabetic";g.fillText(s,x,y);}
+function scaleBar(g,xRight,y,den){ // jobbra igazított vonalas mérce
+  const opts=[0.5,1,2,5,10,20]; let km=1; for(const k of opts){const L=k*1e6/den; if(L>=30&&L<=70){km=k;break;} if(L<30) km=k;}
+  const Lmm=km*1e6/den, x=xRight-Lmm*MM-22*MM, seg=Lmm*MM/4;
+  for(let i=0;i<4;i++){g.fillStyle=i%2?"#fff":"#111";g.fillRect(x+i*seg,y,seg,1.5*MM);} g.strokeStyle="#111";g.lineWidth=0.25*MM;g.strokeRect(x,y,4*seg,1.5*MM);
+  for(let i=0;i<=4;i++) text(g,(i===4?hu(km,km<1?1:0)+" km":hu(km*i/4,km<4?1:0)),x+i*seg,y-0.8*MM,2.2,"400","#111","center");
+  text(g,`1:${(den/1000)} 000`,xRight,y+1.5*MM,3,"800","#111","right");
+}
+function north(g,x,y){g.fillStyle="#fff";g.strokeStyle="#111";g.lineWidth=0.3*MM;g.fillRect(x,y,7*MM,6*MM);g.strokeRect(x,y,7*MM,6*MM);text(g,"É↑",x+3.5*MM,y+4.4*MM,3.2,"800","#111","center");}
+function wrap(g,s,maxW){const w=s.split(" ");const lines=[];let cur="";for(const t of w){const n=cur?cur+" "+t:t;if(g.measureText(n).width>maxW&&cur){lines.push(cur);cur=t;}else cur=n;}if(cur)lines.push(cur);return lines;}
+
+// ================= lapok megrajzolása =================
+const A4={L:[297,210],P:[210,297]};
+async function renderDetail(p,total){
+  const [PW,PH]=A4[p.o]; const cv=document.createElement("canvas"); cv.width=PW*MM; cv.height=PH*MM; const g=cv.getContext("2d");
+  g.fillStyle="#fff"; g.fillRect(0,0,cv.width,cv.height);
+  const [mw,mh]=FRAME[p.o]; const X=(PW-mw)/2*MM, top=9*MM;
+  g.fillStyle="#1f4fd8"; g.fillRect(X,top,mw*MM,1.8*MM);
+  const C=cum(S.route); const k0=C[p.i0]/1000,k1=C[p.i1]/1000;
+  text(g,`${p.no}. lap`+(S.title?`  ·  ${S.title}`:""),X,top+8*MM,4.4,"800");
+  text(g,`${hu(k0)} – ${hu(k1)} km  ·  ${p.no}/${total}`,X,top+12.5*MM,2.8,"400","#444");
+  scaleBar(g,X+mw*MM,top+8.5*MM,S.scale);
+  const Y=top+15*MM, W=mw*MM, H=mh*MM;
+  const f=await drawMap(g,p.z,p.x0,p.y0,p.w,p.h,X,Y,W,H);
+  const band=S.rstyle==="band";
+  let pts=band?routeOn(g,p.z,p.x0,p.y0,f,X,Y,W,H,0.75,"band"):null;
+  trailsOn(g,p.z,p.x0,p.y0,f,X,Y,W,H);
+  if(!band) pts=routeOn(g,p.z,p.x0,p.y0,f,X,Y,W,H,0.75,"line");
+  if(S.kmticks) kmTicks(g,pts,S.scale<=25000?1:S.scale<=40000?2:5,X,Y,W,H);
+  const here=[];
+  for(const q of sortedPts()){const a=proj([q.lat,q.lon],p.z);const x=X+(a[0]-p.x0)*f,y=Y+(a[1]-p.y0)*f;if(x>X+2*MM&&x<X+W-2*MM&&y>Y+2*MM&&y<Y+H-2*MM){here.push(q);marker(g,x,y,q.no,2.3);}}
+  g.strokeStyle="#111"; g.lineWidth=0.3*MM; g.strokeRect(X,Y,W,H); north(g,X+W-9*MM,Y+2*MM);
+  g.fillStyle="rgba(255,255,255,.8)"; g.font=`400 ${1.9*MM}px system-ui,sans-serif`; const at=base().attr; const aw=g.measureText(at).width; g.fillRect(X+W-aw-2*MM,Y+H-3.2*MM,aw+2*MM,3.2*MM); text(g,at,X+W-1*MM,Y+H-0.9*MM,1.9,"400","#333","right");
+  // pontok a térkép alatt, két oszlopban
+  let ty=Y+H+5*MM; const colW=W/2; const two=here.length>3;
+  here.forEach((q,k)=>{const col=two?k%2:0,row=two?Math.floor(k/2):k; const x=X+col*colW, y=ty+row*4.4*MM; if(y>cv.height-(selTrails().length?12:7)*MM) return;
+    marker(g,x+2*MM,y-1*MM,q.no,1.8); text(g,`${q.name}  ${hu(q.km)} km`,x+5.5*MM,y,3,"700"); const tw=g.measureText(`${q.name}  ${hu(q.km)} km`).width;
+    g.font=`400 ${2.7*MM}px system-ui,sans-serif`; let nt=q.note||""; const maxw=(two?colW:W)-tw-8*MM; while(nt&&g.measureText("– "+nt).width>maxw) nt=nt.slice(0,-2)+"…"; if(nt) text(g,"– "+nt,x+5.5*MM+tw+2*MM,y,2.7,"400","#444");});
+  trailLegend(g,X,PH*MM-9.5*MM);
+  text(g,`Lépték 1:${S.scale/1000} 000 – csak 100%-os („tényleges méret”) nyomtatásnál pontos`+(S.rstyle==="band"?"  ·  Rózsaszín sáv: a túra útvonala":""),X,PH*MM-5*MM,2.2,"400","#666");
+  return {cv,o:p.o};
+}
+async function renderOverview(){
+  const lat=S.route[0][0]; const [mw,mh]=[277,170];
+  // a legnagyobb nagyítás, amelynél az útvonal még kényelmesen felfér (~8 képpont/mm)
+  let z=16,box;
+  for(;z>=6;z--){const P=S.route.map(p=>proj(p,z));let x0=1e18,y0=1e18,x1=-1e18,y1=-1e18;for(const q of P){x0=Math.min(x0,q[0]);y0=Math.min(y0,q[1]);x1=Math.max(x1,q[0]);y1=Math.max(y1,q[1]);}
+    const pad=0.06*Math.max(x1-x0,y1-y0)+20;x0-=pad;y0-=pad;x1+=pad;y1+=pad;let w=x1-x0,h=y1-y0;const cx=(x0+x1)/2,cy=(y0+y1)/2;if(w/h<mw/mh)w=h*mw/mh;else h=w*mh/mw;
+    box={x0:cx-w/2,y0:cy-h/2,w,h}; if(w/mw<=PXMM*1.15) break;}
+  const cv=document.createElement("canvas"); cv.width=297*MM; cv.height=210*MM; const g=cv.getContext("2d"); g.fillStyle="#fff"; g.fillRect(0,0,cv.width,cv.height);
+  const X=10*MM,top=8*MM; g.fillStyle="#1f4fd8"; g.fillRect(X,top,mw*MM,1.8*MM);
+  text(g,S.title||"Túratérkép",X,top+8*MM,5,"800");
+  const km=cum(S.route).pop()/1000; const den=Math.round(box.w*mpp(lat,z)/(mw/1000)/1000)*1000;
+  text(g,`${hu(km)} km  ·  áttekintő térkép  ·  kb. 1:${Math.round(den/1000)} 000`,X+mw*MM,top+8*MM,3,"400","#444","right");
+  const Y=top+12*MM,W=mw*MM,H=mh*MM;
+  const f=await drawMap(g,z,box.x0,box.y0,box.w,box.h,X,Y,W,H);
+  routeOn(g,z,box.x0,box.y0,f,X,Y,W,H,0.6,"line");
+  // részletes lapok keretei
+  g.save(); g.beginPath(); g.rect(X,Y,W,H); g.clip(); g.setLineDash([2*MM,1.4*MM]); g.strokeStyle="#333"; g.lineWidth=0.3*MM;
+  for(const p of PAGES){const s=2**(z-p.z);const x=X+(p.x0*s-box.x0)*f,y=Y+(p.y0*s-box.y0)*f;g.strokeRect(x,y,p.w*s*f,p.h*s*f);
+    g.setLineDash([]); g.fillStyle="rgba(255,255,255,.9)"; g.fillRect(x+0.4*MM,y+0.4*MM,6*MM,4.2*MM); text(g,String(p.no),x+3.4*MM,y+3.7*MM,3,"800","#222","center"); g.setLineDash([2*MM,1.4*MM]);}
+  g.restore();
+  for(const q of sortedPts()){const a=proj([q.lat,q.lon],z);marker(g,X+(a[0]-box.x0)*f,Y+(a[1]-box.y0)*f,q.no,2);}
+  g.strokeStyle="#111";g.lineWidth=0.3*MM;g.strokeRect(X,Y,W,H); north(g,X+W-9*MM,Y+2*MM); scaleBar(g,X+W-2*MM,Y+H-6*MM,den);
+  text(g,`${base().attr}  ·  Szaggatott keret: a részletes lapok sorszámmal`,X,210*MM-5*MM,2.2,"400","#666");
+  return {cv,o:"L"};
+}
+function renderList(){
+  const cv=document.createElement("canvas"); cv.width=210*MM; cv.height=297*MM; const g=cv.getContext("2d"); g.fillStyle="#fff"; g.fillRect(0,0,cv.width,cv.height);
+  const X=14*MM,W=182*MM; g.fillStyle="#1f4fd8"; g.fillRect(X,10*MM,W,1.8*MM);
+  text(g,S.title||"Túratérkép",X,19*MM,5,"800"); text(g,"Pontok listája",X,25*MM,3.4,"400","#444");
+  const sp=sortedPts(); let y=34*MM; const PG=new Map(); for(const p of PAGES){for(const q of sp){const a=proj([q.lat,q.lon],p.z);if(a[0]>p.x0&&a[0]<p.x0+p.w&&a[1]>p.y0&&a[1]<p.y0+p.h){if(!PG.has(q.no))PG.set(q.no,p.no);}}}
+  text(g,"Pont",X+8*MM,y,2.8,"700","#444"); text(g,"km",X+120*MM,y,2.8,"700","#444","right"); text(g,"Lap",X+134*MM,y,2.8,"700","#444","right"); text(g,"Igazolva",X+W,y,2.8,"700","#444","right"); y+=3*MM;
+  for(const q of sp){ y+=6*MM; if(y>285*MM) break; marker(g,X+3*MM,y-1.1*MM,q.no,2.2); text(g,q.name,X+8*MM,y,3.4,"700"); text(g,hu(q.km),X+120*MM,y,3.4,"400","#111","right"); text(g,String(PG.get(q.no)||"–"),X+134*MM,y,3.4,"400","#111","right");
+    g.strokeStyle="#999";g.lineWidth=0.25*MM;g.strokeRect(X+W-6*MM,y-4*MM,5*MM,5*MM);
+    if(q.note){g.font=`400 ${2.8*MM}px system-ui,sans-serif`; for(const ln of wrap(g,q.note,105*MM)){y+=3.8*MM; text(g,ln,X+8*MM,y,2.8,"400","#444");}}
+    g.strokeStyle="#e3e3e3"; g.beginPath(); g.moveTo(X,y+2*MM); g.lineTo(X+W,y+2*MM); g.stroke(); }
+  return {cv,o:"P"};
+}
+
+// ================= PDF =================
+function rotated(cv,deg){const r=document.createElement("canvas");r.width=cv.height;r.height=cv.width;const g=r.getContext("2d");
+  g.translate(r.width/2,r.height/2);g.rotate(deg*Math.PI/180);g.drawImage(cv,-cv.width/2,-cv.height/2);return r;}
+let busy=false;
+async function makePDF(){
+  if(busy||!PAGES.length) return;
+  if((S.base==="mapyo"||S.base==="mapyb")&&!S.mapykey){msg("A Mapy térképhez API-kulcs kell (⚙ → Térkép).",true);return;}
+  busy=true; refresh(); $("panel").classList.remove("open");
+  const pr=$("prog"); pr.hidden=false; tilesDone=0;
+  const total=PAGES.reduce((s,p)=>s+tilesOf(p.z,p.x0,p.y0,p.w,p.h),0)+(S.ovw?60:0);
+  pr.max=total; onTile=()=>{pr.value=tilesDone; $("fmsg").textContent=`Térkép letöltése… ${Math.min(99,Math.round(100*tilesDone/total))}%`;};
+  try{
+    const {jsPDF}=window.jspdf; let doc=null, n=0;
+    const add=r=>{ let cv=r.cv,o=r.o;
+      if(S.layout!=="plain"&&o==="L"){ const back=S.layout==="duplex"&&n%2===1; cv=rotated(cv,back?90:-90); o="P"; }
+      const fmt=o==="L"?[297,210]:[210,297]; const img=cv.toDataURL("image/jpeg",0.86);
+      if(!doc) doc=new jsPDF({unit:"mm",format:"a4",orientation:o==="L"?"landscape":"portrait",compress:true}); else doc.addPage("a4",o==="L"?"landscape":"portrait");
+      doc.addImage(img,"JPEG",0,0,fmt[0],fmt[1],undefined,"FAST"); n++; };
+    if(S.ovw){ msg("Áttekintő térkép készül…"); add(await renderOverview()); }
+    if(S.ptlist&&S.points.length){ add(renderList()); }
+    for(const p of PAGES){ msg(`${p.no}/${PAGES.length}. lap készül…`); add(await renderDetail(p,PAGES.length)); }
+    const fn=(S.title||"turaterkep").normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^A-Za-z0-9]+/g,"_").replace(/^_|_$/g,"")||"turaterkep";
+    doc.save(`${fn}_1-${S.scale/1000}k.pdf`); msg(`Kész: ${n} oldalas PDF a Letöltések mappában.`);
+  }catch(e){ msg(e&&e.name==="SecurityError"?"A böngésző nem engedi menteni ezt az alaptérképet. Válts másik alaptérképre.":(e.message||String(e)),true); }
+  pr.hidden=true; busy=false; refresh();
+}
+$("pdf").onclick=makePDF; $("pdf2").onclick=makePDF;
+$("look").onclick=async()=>{ if(busy||!PAGES.length) return; busy=true; refresh(); tilesDone=0; const p=PAGES[S.cur]; const tot=tilesOf(p.z,p.x0,p.y0,p.w,p.h);
+  onTile=()=>{$("fmsg").textContent=`Előnézet… ${Math.round(100*tilesDone/tot)}%`;};
+  try{ const r=await renderDetail(p,PAGES.length); $("previmg").src=r.cv.toDataURL("image/jpeg",0.85); $("prev").classList.add("open"); msg(""); }
+  catch(e){ msg(e&&e.name==="SecurityError"?"A böngésző nem engedi menteni ezt az alaptérképet. Válts másik alaptérképre.":(e.message||String(e)),true); }
+  busy=false; refresh(); };
+$("prevclose").onclick=()=>$("prev").classList.remove("open");
+
+// ================= vezérlők =================
+$("pprev").onclick=()=>showPage(S.cur-1); $("pnext").onclick=()=>showPage(S.cur+1);
+$("gear").onclick=()=>{renderPts();$("panel").classList.add("open");}; $("close").onclick=()=>$("panel").classList.remove("open");
+$("panel").addEventListener("click",e=>{if(e.target.id==="panel")$("panel").classList.remove("open");});
+const bind=(id,key,fn,prop="value")=>{const el=$(id); el[prop]=prop==="checked"?!!S[key]:String(S[key]); el.onchange=()=>{S[key]=prop==="checked"?el.checked:(key==="scale"?+el.value:el.value); save(); fn&&fn();};};
+bind("scale","scale",()=>{S.cur=0;draw();}); bind("base","base",()=>{$("customurl").hidden=S.base!=="custom"; baseUI(); renderTrails();baseUI();setLayers();draw();}); bind("customurl","custom",()=>{setLayers();draw();});
+bind("hike","hike",setLayers,"checked"); bind("rstyle","rstyle",draw); bind("mapykey","mapykey",()=>{setLayers();});
+function baseUI(){ $("mapybox").hidden=!(S.base==="mapyo"||S.base==="mapyb");
+  $("basenote").textContent=S.base==="mapyo"?"A Mapy Outdoorba az összes turistajelzés bele van rajzolva, ezeket nem lehet kikapcsolni. Ha csak egyes jelzéseket akarsz látni, válaszd a Mapy Basic vagy az OpenTopoMap alapot.":
+    S.base==="mapyb"?"Jelzések nélküli alap: a 3. pontban kiválasztott turistautak kerülnek rá.":""; } bind("kmticks","kmticks",null,"checked"); bind("ttl","title",refresh); bind("layout","layout"); bind("ovw","ovw",null,"checked"); bind("ptlist","ptlist",null,"checked");
+$("customurl").hidden=S.base!=="custom";
+let armed=false;
+$("reset").onclick=()=>{ if(armed){armed=false;$("confirm").hidden=true;S.route=null;S.points=[];S.cur=0;S.title="";$("ttl").value="";save();draw();renderPts();$("routeinfo").textContent="Nincs betöltött útvonal.";msg("Minden törölve.");}
+  else{armed=true;$("confirm").hidden=false;setTimeout(()=>{armed=false;$("confirm").hidden=true;},4000);} };
+
+setLayers(); draw();
+if(S.route){ afterRoute(""); if(PAGES.length) showPage(Math.min(S.cur,PAGES.length-1)); else fitRoute(); }
+</script>
+</body>
+</html>
